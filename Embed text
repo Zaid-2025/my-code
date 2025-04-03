@@ -1,0 +1,122 @@
+import numpy as np
+import cv2
+# Ensure you have TensorFlow installed by running: pip install tensorflow
+import tensorflow as tf
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.applications.vgg19 import preprocess_input
+import random
+from skimage.metrics import structural_similarity as ssim
+import matplotlib.pyplot as plt
+
+# تحميل نموذج VGG16 المدرب مسبقًا
+model = VGG16(weights='imagenet', include_top=False)
+
+
+def segment_image(image_path, save_resized_path=None):
+    img = cv2.imread(image_path)
+    img_resized = cv2.resize(img, (224, 224))
+
+    if save_resized_path:
+        cv2.imwrite(save_resized_path, img_resized)
+
+    img_array = np.expand_dims(img_resized, axis=0)
+    img_array = preprocess_input(img_array)
+
+    # استخراج الميزات باستخدام VGG16
+    features = model.predict(img_array)
+    features = features.reshape((features.shape[1], features.shape[2], features.shape[3]))
+
+    # إعداد خريطة القطع بناءً على المناطق المعقدة
+    complex_regions = []
+    threshold = 0.5  # تحسين اختيار المناطق المعقدة
+    for i in range(features.shape[0]):
+        for j in range(features.shape[1]):
+            if np.mean(features[i, j, :]) > threshold:  # معيار أكثر دقة
+                complex_regions.append((i, j))
+
+    return img_resized, complex_regions
+
+
+def hide_data_with_random_distribution(image, complex_regions, data, key):
+    # تحويل البيانات إلى سلسلة ثنائية
+    binary_data = ''.join(format(byte, '08b') for byte in data)
+    data_length = len(binary_data) + 16
+
+    # تضمين حجم البيانات في أول 16 بت
+    size_bits = format(data_length, '016b')
+    binary_data = size_bits + binary_data
+    data_index = 0
+
+    # تحديد عدد المناطق المطلوبة بناءً على طول البيانات
+    num_required_regions = (len(binary_data) + 255) // 256
+
+    # استخدام المفتاح لضبط الترتيب العشوائي
+    random.seed(key)
+    random.shuffle(complex_regions)
+
+    for region in complex_regions[:num_required_regions]:
+        i, j = region
+        for x in range(i * 16, (i + 1) * 16):
+            for y in range(j * 16, (j + 1) * 16):
+                if data_index < len(binary_data):
+                    # تحويل البكسل إلى نوع int لتجنب أخطاء uint8
+                    pixel = list(image[x, y])
+                    try:
+                        # تأمين البيانات الثنائية لتكون إما 0 أو 1
+                        binary_bit = int(binary_data[data_index])
+                        if binary_bit not in (0, 1):
+                            raise ValueError(f"Invalid binary bit: {binary_bit}")
+
+                        # تعديل قيمة البكسل بأمان
+                        red_channel = int(pixel[0])  # تأمين نوع البيانات
+                        red_channel = (red_channel & ~1) | binary_bit  # تعديل البت الأقل أهمية
+                        pixel[0] = np.clip(red_channel, 0, 255)  # التأكد من البقاء ضمن النطاق الصحيح
+
+                        # إعادة القناة المعدلة
+                        image[x, y] = tuple(pixel)
+                        data_index += 1  # الانتقال إلى البت التالي
+
+                    except Exception as e:
+                        print(f"Error modifying pixel at ({x}, {y}): {e}")
+                        continue
+
+                else:
+                    break
+            if data_index >= len(binary_data):
+                break
+        if data_index >= len(binary_data):
+            break
+
+    return image
+
+
+
+def save_image(image, path):
+    cv2.imwrite(path, image)
+
+
+def read_file(file_path):
+    with open(file_path, 'rb') as file:
+        file_data = file.read()
+    return file_data
+
+
+def hide_file_in_image(image_path, file_path, output_path, key, save_resized_path=None):
+    file_data = read_file(file_path)
+    original_img, complex_regions = segment_image(image_path, save_resized_path)
+    detailed_region_img = hide_data_with_random_distribution(original_img.copy(), complex_regions, file_data, key)
+    save_image(detailed_region_img, output_path)
+    return original_img, detailed_region_img
+
+
+# تنفيذ الخطوات
+image_path = "w1.bmp"
+file_path = "notbad2.txt"  # هنا يمكنك وضع مسار أي ملف تريد إخفاءه
+output_path = "detailed_region_hidden.bmp"
+resized_image_path = "resized_image.bmp"  # مسار حفظ الصورة بعد تغيير حجمها
+
+key = 123  # المفتاح الذي سيتم استخدامه لضبط الترتيب العشوائي
+#key = int(input("أدخل رقم البداية (key): "))
+
+original_img, detailed_region_img = hide_file_in_image(image_path, file_path, output_path, key,
+                                                       save_resized_path=resized_image_path)
