@@ -1,0 +1,108 @@
+import numpy as np
+import cv2
+import tensorflow as tf
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.applications.vgg19 import preprocess_input
+import random
+
+# تحميل نموذج VGG16 المدرب مسبقًا
+model = VGG16(weights='imagenet', include_top=False)
+
+def segment_image(image_path):
+    img = cv2.imread(image_path)
+    img_resized = cv2.resize(img, (224, 224))
+    img_array = np.expand_dims(img_resized, axis=0)
+    img_array = preprocess_input(img_array)
+
+    # استخراج الميزات باستخدام VGG16
+    features = model.predict(img_array)
+    features = features.reshape((features.shape[1], features.shape[2], features.shape[3]))
+
+    # إعداد خريطة القطع بناءً على المناطق المعقدة
+    complex_regions = []
+    threshold = 0.5  # تحسين اختيار المناطق المعقدة
+    for i in range(features.shape[0]):
+        for j in range(features.shape[1]):
+            if np.mean(features[i, j, :]) > threshold:  # معيار أكثر دقة
+                complex_regions.append((i, j))
+
+    return img_resized, complex_regions
+
+def extract_data_with_random_distribution(image, complex_regions, key):
+    # استخدام المفتاح لضبط الترتيب العشوائي
+    random.seed(key)
+    random.shuffle(complex_regions)
+
+    binary_data = []
+    for region in complex_regions:
+        i, j = region
+        for x in range(i * 16, (i + 1) * 16):
+            for y in range(j * 16, (j + 1) * 16):
+                pixel = image[x, y]
+                binary_data.append(pixel[0] & 1)  # استخراج البت الأقل أهمية
+                if len(binary_data) >= 16:  # تأكد من قراءة أول 16 بت لتحديد حجم النص
+                    break
+            if len(binary_data) >= 16:
+                break
+        if len(binary_data) >= 16:
+            break
+
+    # استعادة حجم النص من أول 16 بت
+    size_bits = binary_data[:16]
+    data_length = int("".join(map(str, size_bits)), 2)
+
+    # استخراج النص الثنائي
+    binary_data = binary_data[16:]
+    data_index = 0
+    extracted_bits = []
+    for region in complex_regions:
+        if data_index >= data_length:
+            break
+        i, j = region
+        for x in range(i * 16, (i + 1) * 16):
+            for y in range(j * 16, (j + 1) * 16):
+                if data_index < data_length:
+                    pixel = image[x, y]
+                    extracted_bits.append(pixel[0] & 1)  # استخراج البت الأقل أهمية
+                    data_index += 1
+                else:
+                    break
+            if data_index >= data_length:
+                break
+
+    # تحويل البتات الثنائية إلى نص
+    byte_array = [
+        int("".join(map(str, extracted_bits[i:i + 8])), 2)
+        for i in range(0, len(extracted_bits), 8)
+    ]
+    extracted_data = bytes(byte_array).decode('utf-8', errors='ignore')
+    return extracted_data
+
+def save_to_file(data, output_file):
+    with open(output_file, 'w', encoding='utf-8') as file:
+        file.write(data)
+
+def extract_file_from_image(image_path, key, output_file):
+    # تقسيم الصورة واسترجاع المناطق المعقدة
+    img, complex_regions = segment_image(image_path)
+
+    # استخراج النص المخفي
+    extracted_data = extract_data_with_random_distribution(img, complex_regions, key)
+    extracted_data = extracted_data[2:]
+
+    # حفظ النص المستخرج في ملف
+    save_to_file(extracted_data, output_file)
+
+    return extracted_data
+
+# تنفيذ الخطوات
+image_path = "detailed_region_hidden.bmp"
+key = 123  # المفتاح المستخدم أثناء الإخفاء
+#key = int(input("أدخل رقم البداية (key): "))
+output_file = "extracted_data.txt"  # اسم الملف الذي سيحفظ فيه النص
+
+extracted_data = extract_file_from_image(image_path, key, output_file)
+
+# عرض النص المستخرج في الطرفية
+#print("Extracted Data:", extracted_data)
+#print(f"The extracted data has been saved to {output_file}")
